@@ -1,0 +1,13 @@
+# 本机安装、运行数据和构建产物
+node_modules/
+/install/
+/backups/
+/build/
+/host-test-*/
+/dpi-test-*/
+*.lnk
+/electron-v*-win32-x64.zip
+
+# 不随公开仓库再分发的上游附加素材
+/pet-app/assets/fonts/
+/pet-app/assets/memes/

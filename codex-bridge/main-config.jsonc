@@ -1,0 +1,17 @@
+{
+  "notificationsEnabled": false,
+  "confineToScreen": true,
+  "pets": [
+    {
+      "id": "main",
+      "name": "Codex 桌面助手",
+      "size": 280,
+      "balanceEnabled": false,
+      "whisperEnabled": false,
+      "workStatusEnabled": true,
+      "fixedEnabled": false,
+      "display": "desktop",
+      "position": { "corner": "bottom-right", "marginX": 44, "marginY": 64 }
+    }
+  ]
+}
