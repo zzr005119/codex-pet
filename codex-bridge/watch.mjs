@@ -4,9 +4,10 @@
  * A named pipe prevents duplicate login launchers.
  */
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { createInterface } from 'node:readline';
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
@@ -25,7 +26,12 @@ lock.on('error', (error) => {
   if (error.code !== 'EADDRINUSE') record('lock-error', { code: error.code });
   process.exit(error.code === 'EADDRINUSE' ? 0 : 1);
 });
-lock.listen('\\\\.\\pipe\\codex-dsh-pet-' + (process.env.USERNAME ?? 'user').replace(/\W/g, '_'), () => run());
+const userKey = (process.env.USERNAME ?? 'user').replace(/\W/g, '_');
+// A portable copy only shares its lock with launchers for the same folder.
+const portableKey = process.env.DSH_PET_PORTABLE === '1'
+  ? '-' + createHash('sha256').update(realpathSync.native(root).toLowerCase()).digest('hex').slice(0, 24)
+  : '';
+lock.listen('\\\\.\\pipe\\codex-dsh-pet-' + userKey + portableKey, () => run());
 
 function run() {
   let pet = null;

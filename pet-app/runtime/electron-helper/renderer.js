@@ -32,6 +32,7 @@ function scheduleReboot() {
  * 就建窗，首帧 fetch 会打空；5s 重试就自愈，不该闪红条。持续失败才是真配置错误，照旧大声报。
  */
 let bootFailures = 0;
+let pendingCorner = null;
 
 async function loadConfig() {
   // 唯一配置入口：宿主 /config 的成品聚合（已合并并保证绝对正确），一步拉取 → 拍平，零校验零兜底
@@ -80,6 +81,10 @@ async function boot() {
     }
     for (const s of sprites) s.dispose();
     sprites = [new PetSprite(pet)];
+    if (pendingCorner) {
+      for (const s of sprites) s.moveToCorner(pendingCorner);
+      pendingCorner = null;
+    }
     window.__dshPetDebug.configOk = true;
     window.__dshPetDebug.spriteCount = sprites.length;
     for (const s of sprites) s.playIdle();
@@ -119,6 +124,14 @@ function injectAssets() {
   tipStyle.textContent = S.TOOLTIP_CSS;
   document.head.appendChild(tipStyle);
 }
+
+window.petBridge?.onMoveToCorner?.((corner) => {
+  if (sprites.length === 0) {
+    pendingCorner = corner;
+    return;
+  }
+  for (const s of sprites) s.moveToCorner(corner);
+});
 
 // 显示器几何变化（改分辨率/缩放、插拔屏、旋转）：主进程重算后推来，渲染端就地重挂视口与边界。
 if (window.petBridge && window.petBridge.onDisplays) {

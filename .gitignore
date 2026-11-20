@@ -3,6 +3,7 @@ node_modules/
 /install/
 /backups/
 /build/
+/dist/
 /host-test-*/
 /dpi-test-*/
 *.lnk

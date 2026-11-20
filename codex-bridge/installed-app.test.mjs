@@ -240,6 +240,18 @@ test('installed Electron shows distinct activity buttons, clears one completion 
     await renderer.call('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: ['hover'] });
     await expectIconStyles();
     await renderer.call('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [] });
+    await renderer.evaluate(`(() => {
+      window.playedCues = [];
+      const play = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function () {
+        const cue = /\\/sound\\/(turn-(?:success|error)\\.wav)$/.exec(this.src);
+        if (!cue) return play.call(this);
+        this.muted = true;
+        return play.call(this).then(() => { window.playedCues.push(cue[1]); });
+      };
+      return true;
+    })()`);
+    const playedCues = () => renderer.evaluate('window.playedCues');
     const otherFile = join(sessionDir, 'rollout-2026-10-29T15-01-03-' + otherThread + '.jsonl');
     writeFileSync(otherFile, metaLine(otherThread) + eventLine('task_started', otherTurn));
     await expectRows([['Review changes', 'working'], ['Build check', 'working']]);
@@ -247,8 +259,11 @@ test('installed Electron shows distinct activity buttons, clears one completion 
     appendFileSync(otherFile, eventLine('task_complete', otherTurn));
     await expectRows([['Build check', 'working'], ['Review changes', 'success']]);
     await expectIconStyles();
+    assert.deepEqual(await playedCues(), [], 'task sounds are disabled by default');
+    await renderer.evaluate("localStorage.setItem('codex-pet.sound.completion', '1')");
     appendFileSync(transcript, eventLine('task_complete'));
     await expectRows([['Build check', 'success'], ['Review changes', 'success']]);
+    await waitFor(playedCues, (cues) => cues.includes('turn-success.wav'), 'missing completion sound');
     writeFileSync(join(dataDir, 'acknowledged-status.json'), JSON.stringify({ threadId, turnId }));
     await expectRows([['Review changes', 'success']]);
     writeFileSync(join(dataDir, 'acknowledged-status.json'), JSON.stringify({ readTurns: {
@@ -264,6 +279,8 @@ test('installed Electron shows distinct activity buttons, clears one completion 
       eventLine('task_complete', failedTurn, { error: { message: 'fixture failure' } }));
     await expectRows([['Review changes', 'error'], ['Build check', 'stopped']]);
     await expectIconStyles();
+    await waitFor(playedCues, (cues) => cues.includes('turn-error.wav'), 'missing failure sound');
+    assert.deepEqual(await playedCues(), ['turn-success.wav', 'turn-error.wav']);
     writeFileSync(join(dataDir, 'acknowledged-status.json'), JSON.stringify({ readTurns: {
       [threadId]: interruptedTurn, [otherThread]: failedTurn,
     } }));

@@ -228,6 +228,77 @@
         font-size: calc(var(--f) * 0.7692);
         color: rgba(43, 43, 43, 0.6);
       }
+      .pet-weather-card {
+        position: fixed;
+        z-index: 5;
+        width: max-content;
+        max-width: min(210px, calc(100vw - 8px));
+        padding: 8px 31px 8px 10px;
+        border: 1px solid rgba(43, 43, 43, 0.08);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.96);
+        color: #2b2b2b;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.14);
+        font-size: 12px;
+        line-height: 1.5;
+        pointer-events: auto;
+      }
+      .pet-weather-card button,
+      .pet-weather-card input {
+        min-width: 0;
+        font: inherit;
+      }
+      .pet-weather-card button {
+        border: 0;
+        border-radius: 6px;
+        background: rgba(24, 95, 165, 0.09);
+        color: #185fa5;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .pet-weather-card button:hover {
+        background: rgba(24, 95, 165, 0.16);
+      }
+      .pet-weather-card .pet-weather-close {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        background: transparent;
+        color: #52525b;
+        font-size: 16px;
+      }
+      .pet-weather-card .pet-weather-close:hover {
+        background: rgba(43, 43, 43, 0.08);
+      }
+      .pet-weather-form {
+        display: flex;
+        gap: 5px;
+      }
+      .pet-weather-form[hidden] {
+        display: none;
+      }
+      .pet-weather-form input {
+        width: 102px;
+        padding: 3px 5px;
+        border: 1px solid #c4cbd1;
+        border-radius: 6px;
+        background: #fff;
+        color: inherit;
+        user-select: text;
+      }
+      .pet-weather-message {
+        overflow-wrap: anywhere;
+      }
+      .pet-weather-form[hidden] + .pet-weather-message:not(:empty) {
+        cursor: pointer;
+      }
+      .pet-weather-form:not([hidden]) + .pet-weather-message:not(:empty),
+      .pet-weather-change {
+        margin-top: 4px;
+      }
       .pet-codex-activities {
         position: fixed;
         z-index: 3;
@@ -396,6 +467,7 @@
     <script src="./shared-core.js"></script>
     <script src="./constants.js"></script>
     <script src="./codex-activities.js"></script>
+    <script src="./weather-card.js"></script>
     <script src="./sprite.js"></script>
     <script src="./events.js"></script>
     <script src="./renderer.js"></script>

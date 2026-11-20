@@ -6,7 +6,7 @@ const { EventEmitter } = require('node:events');
 const { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
-const { readConversationUrl, watchHost, install } = require('./codex-integration.cjs');
+const { readConversationUrl, watchHost, install, createCompletionCue } = require('./codex-integration.cjs');
 
 function createIpcMain() {
   const ipcMain = new EventEmitter();
@@ -16,6 +16,24 @@ function createIpcMain() {
   ipcMain.invoke = (channel, event) => handlers.get(channel)?.(event);
   return ipcMain;
 }
+
+test('completion cues ignore startup history and ring once for fresh completed turns across sessions', () => {
+  const cues = [];
+  const check = createCompletionCue((state) => cues.push(state));
+  const a = { threadId: 'a', turnId: 'old', state: 'success' };
+  const b = { threadId: 'b', turnId: 'active', state: 'working' };
+  const fixed = { mode: 'fixed', threadId: 'c', turnId: 'existing', state: 'success' };
+  const automatic = (...activities) => check({ mode: 'automatic', activities });
+  automatic(a, b);
+  automatic(a, { ...b, state: 'error' }, { ...a, turnId: 'running', state: 'working' });
+  automatic(a, { ...b, state: 'error' }, { ...a, turnId: 'running', state: 'success' });
+  automatic({ ...a, turnId: 'running', state: 'success' });
+  automatic(a, { ...b, state: 'error' }, { ...a, turnId: 'stopped', state: 'stopped' });
+  check(fixed);
+  check({ ...fixed, turnId: 'new' });
+  check({ ...fixed, turnId: 'new', acknowledged: true });
+  assert.deepEqual(cues, ['error', 'success', 'success']);
+});
 
 test('conversation links accept only a UUID, never executable or arbitrary URLs', () => {
   const directory = mkdtempSync(join(tmpdir(), 'pet-link-'));
@@ -215,6 +233,32 @@ test('quitting releases both Codex activity IPC handlers', (t) => {
   assert.equal(fixture.open(fixture.pet, fixture.a), undefined);
 });
 
+test('global return opens the first available activity and skips an acknowledged completion', async (t) => {
+  const fixture = setupActivityIpc(t);
+  const completed = { ...fixture.b, state: 'success' };
+  fixture.publish([fixture.a, completed]);
+
+  let pending = fixture.openFromShortcut();
+  fixture.completeOpen();
+  await pending;
+  assert.deepEqual(fixture.opened, [`codex://threads/${fixture.a.threadId}`]);
+  assert.deepEqual(fixture.readTurns(), {});
+
+  fixture.publish([completed]);
+  pending = fixture.openFromShortcut();
+  fixture.completeOpen();
+  await pending;
+  assert.deepEqual(fixture.readTurns(), { [completed.threadId]: completed.turnId });
+
+  // The published summary can still name the turn that was just acknowledged.
+  pending = fixture.openFromShortcut();
+  fixture.completeOpen();
+  await pending;
+  assert.deepEqual(fixture.opened, [
+    `codex://threads/${fixture.a.threadId}`, `codex://threads/${completed.threadId}`, 'codex://',
+  ]);
+});
+
 function setupActivityIpc(t) {
   const directory = mkdtempSync(join(tmpdir(), 'pet-activity-ipc-'));
   const previous = process.env.DSH_PET_CODEX_DATA;
@@ -243,7 +287,7 @@ function setupActivityIpc(t) {
     else process.env.DSH_PET_CODEX_DATA = previous;
     rmSync(directory, { recursive: true, force: true });
   });
-  install({
+  const openFromShortcut = install({
     app, ipcMain,
     BrowserWindow: { fromWebContents: (sender) => sender === pet.sender ? {} : null },
     shell: {
@@ -254,7 +298,7 @@ function setupActivityIpc(t) {
     },
   });
   return {
-    a, b, pet, stranger, opened, setMode, quit,
+    a, b, pet, stranger, opened, setMode, quit, openFromShortcut,
     publish: (activities) => writeFileSync(join(directory, 'session-status.json'), JSON.stringify({
       mode: 'automatic', ...activities[0], activities,
     })),

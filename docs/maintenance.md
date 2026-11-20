@@ -1,5 +1,17 @@
 # 构建与维护
 
+## 构建 Windows 便携包
+
+在 Git 检出目录执行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-portable.ps1
+```
+
+产物为 `dist/codex-pet-win-x64.zip`。脚本核对 Electron 43.3.0 和 Node.js 24.15.0 的 SHA-256，把下载的运行时缓存到 `build/portable-cache/`。也可用 `-ElectronZip` 和 `-NodeZip` 指定已下载的官方 ZIP。构建使用 Git 已跟踪的应用文件名和当前工作区内容，包内只带两份默认配置。
+
+解压到可写文件夹，双击「启动桌宠.vbs」开启联动，双击「停止桌宠.vbs」关闭此副本。更新已有副本时，先停止该副本，再备份 `data/`。
+
 ## 构建与安装
 
 需要 Windows x64、Codex 桌面版和 Node.js 24。以下命令从仓库根目录运行。若已经有本地 `install/`，请保留它，并在另一份检出中执行首次安装。

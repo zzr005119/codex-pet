@@ -22,9 +22,8 @@ try {
   );
   process.exit(3);
 }
-const { app, BrowserWindow, ipcMain, screen, shell, protocol, Tray, Menu, nativeImage, powerMonitor } =
+const { app, BrowserWindow, ipcMain, screen, shell, protocol, Tray, Menu, nativeImage, powerMonitor, globalShortcut, net } =
   electronApi;
-require('./codex-integration.cjs').install(electronApi);
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { readFileSync, writeFileSync } = require('node:fs');
@@ -48,6 +47,7 @@ const { shouldLinearize, resolveForcedScale, resolvePetScale } = require('./dpi-
 // 托盘的平台差异（模板图 / 左键是否自动弹菜单 / Dock）：规则住在模块里，main.js 只接线
 const { trayPlatform } = require('./tray-platform.js');
 const { buildDeskGeometry } = require('./desktop-geometry.js');
+const { fetchWeather } = require('./pet-weather.js');
 
 /** Linux 指针提供者：仅在 Linux 创建；查询失败时 get() 返回 null（调用方回退 Electron 原生 API） */
 const linuxPointer = process.platform === 'linux' ? createLinuxPointer() : null;
@@ -264,6 +264,19 @@ if (BRIDGE) {
 
 /** 窗口表：petId -> BrowserWindow */
 const windows = new Map();
+const openCodexFromShortcut = require('./codex-integration.cjs').install({
+  app, ipcMain, shell, BrowserWindow,
+  onCompletion(state) {
+    for (const win of windows.values()) {
+      if (win.isDestroyed() || win.webContents.isLoadingMainFrame()) continue;
+      win.webContents.send('pet:completion-cue', state);
+      break;
+    }
+  },
+});
+/** 快捷键临时隐藏的窗口，不修改宠物的显示配置。 */
+const shortcutHiddenWindows = new Set();
+const pendingWindowCorners = new WeakMap();
 
 /** win.id -> 上一次请求的内容区矩形（"x,y,w,h"）：pet:set-bounds 的去重基准 */
 const lastRequestedBounds = new Map();
@@ -432,6 +445,11 @@ function createPetWindows() {
     // webPreferences.zoomFactor 对 show:false 的窗口不生效（实测），须在加载完成后设置。
     win.webContents.on('did-finish-load', () => {
       win.webContents.setZoomFactor(scale);
+      const corner = pendingWindowCorners.get(win);
+      if (corner) {
+        pendingWindowCorners.delete(win);
+        win.webContents.send('pet:move-to-corner', corner);
+      }
     });
     // 默认整窗点击穿透（渲染端在光标进出身体命中区时经 IPC 翻转）；
     // forward:true 保证穿透期间 mousemove 仍转发进渲染端做命中判定。
@@ -440,14 +458,14 @@ function createPetWindows() {
     win.on('show', () => keepOffTaskbar(win));
     win.once('ready-to-show', () => {
       keepOffTaskbar(win);
-      win.showInactive();
+      if (!shortcutHiddenWindows.has(win.id)) win.showInactive();
     });
     // 兜底显示：paintWhenInitiallyHidden:false 时渲染器可能不产出首帧，ready-to-show 便永不触发，
     // 而 show 只挂在它上面 → 窗口永远隐藏。页面加载完成后强制兜底一次；zoomFactor 在更早注册的
     // did-finish-load 里设置，顺序不受影响。
     win.webContents.once('did-finish-load', () => {
       setTimeout(() => {
-        if (!win.isDestroyed() && !win.isVisible()) win.showInactive();
+        if (!win.isDestroyed() && !shortcutHiddenWindows.has(win.id) && !win.isVisible()) win.showInactive();
       }, 400);
     });
     // 兜底交互：正规翻转链路只有 forward 鼠标钩子一个入口，该钩子在 Windows 上可能静默失效，
@@ -455,7 +473,7 @@ function createPetWindows() {
     // 判定区域一致（状态未变不翻转）。唯一不能自行决定的是 busy：渲染端正拿着输入时不得翻回穿透
     // （主进程光看光标与窗口位移分不清拖拽跟手和漫游/抛掷，所以由渲染端上报）。
     const pointerTimer = setInterval(() => {
-      if (pointerFallbackPaused || win.isDestroyed()) return;
+      if (pointerFallbackPaused || win.isDestroyed() || shortcutHiddenWindows.has(win.id)) return;
       const b = win.getBounds();
       if (b.width < 8 || b.height < 8) return; // 尺寸还没落定（renderer 首帧上报前）
       const ignoring = windowIgnore.get(win.id) !== false;
@@ -494,6 +512,7 @@ function createPetWindows() {
       clearInterval(pointerTimer);
       clearInterval(topmostTimer);
       windows.delete(pet.id);
+      shortcutHiddenWindows.delete(win.id);
       lastRequestedBounds.delete(win.id);
       winMargins.delete(win.id);
       windowIgnore.delete(win.id);
@@ -633,8 +652,7 @@ async function handleBridgeRequest(request) {
 // 托盘放在本进程，是因为它是桌面模式唯一不进浏览器的入口：某只宠物的 display 改成 web/none 后
 // 桌面窗口与它自己的右键菜单一起消失，只有托盘还能在桌面侧把它切回来。
 // 它不是非有不可：main 条目的 trayEnabled 为 false 时不建托盘，宿主也就不再为本进程常驻。
-// 数据不新增通道：读写都走渲染端在用的同一条 bridge。菜单是静态的——每次切换 display 宿主都会重启
-// 本进程（syncDesktop），新进程按新配置重建菜单，所以不需要「重建菜单刷新勾选」的逻辑。
+// 配置读写走渲染端在用的同一条 bridge。快捷键的临时显隐只刷新托盘勾选。
 
 const PET_ROUTE = '/dsh-pet-7340';
 const ORIGIN = new URL(process.env.DSH_PET_CONFIG_URL || 'http://127.0.0.1:3080/dsh-pet-7340/config').origin;
@@ -661,6 +679,59 @@ const toggleDisplay = (display) =>
   display === 'both' ? 'web' : display === 'web' ? 'both' : display === 'desktop' ? 'none' : 'desktop';
 
 let tray = null;
+let refreshTrayMenu;
+
+function setPetWindowHidden(win, hidden) {
+  if (hidden) {
+    shortcutHiddenWindows.add(win.id);
+    win.hide();
+  } else {
+    shortcutHiddenWindows.delete(win.id);
+    win.showInactive();
+  }
+}
+
+function togglePetWindows() {
+  const activeWindows = [...windows.values()].filter((win) => !win.isDestroyed());
+  const hide = activeWindows.some((win) => !shortcutHiddenWindows.has(win.id));
+  for (const win of activeWindows) setPetWindowHidden(win, hide);
+  refreshTrayMenu?.();
+}
+
+function movePetWindowsToCorner(corner) {
+  for (const win of windows.values()) {
+    if (win.isDestroyed()) continue;
+    if (win.webContents.isLoadingMainFrame()) pendingWindowCorners.set(win, corner);
+    else win.webContents.send('pet:move-to-corner', corner);
+  }
+}
+
+function registerDesktopShortcuts() {
+  if (process.platform !== 'win32' || !openCodexFromShortcut) return;
+  const corners = ['top-left', 'top-right', 'bottom-right', 'bottom-left'];
+  const shortcuts = [
+    ['P', togglePetWindows],
+    ['C', () => {
+      openCodexFromShortcut().catch((error) => {
+        console.error('[dsh-pet-desktop-helper] Codex shortcut failed:', error);
+      });
+    }],
+    ...corners.map((corner, index) => [String(index + 1), () => movePetWindowsToCorner(corner)]),
+  ];
+  const registered = [];
+  for (const [key, action] of shortcuts) {
+    const accelerator = 'Control+Alt+Shift+' + key;
+    try {
+      if (globalShortcut.register(accelerator, action)) registered.push(accelerator);
+      else console.warn('[dsh-pet-desktop-helper] shortcut unavailable: ' + accelerator);
+    } catch (error) {
+      console.warn('[dsh-pet-desktop-helper] shortcut registration failed: ' + accelerator, error);
+    }
+  }
+  app.once('will-quit', () => {
+    for (const accelerator of registered) globalShortcut.unregister(accelerator);
+  });
+}
 
 /** 写回某只宠物的 display：宿主写完配置会重启本进程，响应可能永远不回（同 sprite.js 的 setPetDisplay） */
 function traySetPetDisplay(id, display) {
@@ -685,7 +756,7 @@ function trayIcon() {
 
 /**
  * 建托盘：列出配置里全部宠物（含 display 为 web/none 的——它们当前勾是空的，点一下就能送回来，
- * 这是托盘相对宠物右键菜单的增量）。勾 = 当前 display 含 desktop/both。
+ * 这是托盘相对宠物右键菜单的增量）。勾 = 当前 display 含 desktop/both，且未临时隐藏。
  */
 async function startTray() {
   try {
@@ -733,17 +804,28 @@ async function startTray() {
     };
     tray = new Tray(trayIcon());
     tray.setToolTip('dsh-pet 桌面宠物');
-    tray.setContextMenu(
-      Menu.buildFromTemplate([
-        ...pets.map((pet) => ({
-          label: pet.name || pet.id,
-          type: 'checkbox',
-          checked: isDesktopDisplay(pet.display),
-          click: () => traySetPetDisplay(pet.id, toggleDisplay(pet.display)),
-        })),
-        ...(canQuit ? [{ type: 'separator' }, { label: '退出', click: quitApp }] : []),
-      ]),
-    );
+    refreshTrayMenu = () => {
+      tray?.setContextMenu(
+        Menu.buildFromTemplate([
+          ...pets.map((pet) => ({
+            label: pet.name || pet.id,
+            type: 'checkbox',
+            checked: isDesktopDisplay(pet.display) && !shortcutHiddenWindows.has(windows.get(pet.id)?.id),
+            click: () => {
+              const win = windows.get(pet.id);
+              if (win && shortcutHiddenWindows.has(win.id)) {
+                setPetWindowHidden(win, false);
+                refreshTrayMenu();
+                return;
+              }
+              traySetPetDisplay(pet.id, toggleDisplay(pet.display));
+            },
+          })),
+          ...(canQuit ? [{ type: 'separator' }, { label: '退出', click: quitApp }] : []),
+        ]),
+      );
+    };
+    refreshTrayMenu();
     // Windows 上 setContextMenu 只接管右键，左键默认什么都不做（macOS 相反：左键即弹菜单）
     if (TRAY_PLATFORM.leftClickPopsMenu) tray.on('click', () => tray.popUpContextMenu());
   } catch (e) {
@@ -792,6 +874,15 @@ app.whenReady().then(() => {
 
   linuxPointer?.start();
   createPetWindows();
+  registerDesktopShortcuts();
+
+  ipcMain.handle('pet:weather', (event, city) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed() || ![...windows.values()].includes(win)) {
+      return { ok: false, message: '暂时无法查询天气' };
+    }
+    return fetchWeather(city, { request: (url, options) => net.fetch(url, options) });
+  });
 
   // 合盖/唤醒是任务栏按钮重建最集中的时刻：resume / unlock-screen 后把每只宠物重新摘一次。
   // powerMonitor 只能在 ready 之后使用，所以挂在这里而不是模块顶层。

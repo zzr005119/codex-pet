@@ -22,8 +22,8 @@ const CLICK_SOUND_THROTTLE_MS = 100;
 let clickAudio = null;
 let lastClickSoundAt = 0;
 const playClickSound = () => {
-  // 开关来自成品配置 main.clickSoundEnabled（renderer.js 的 loadConfig 带入）；缺失一律静音
-  if (!config || config.clickSoundEnabled !== true) return;
+  // 右键偏好优先，未设置时沿用配置里的点击音效开关。
+  if (!petSoundEnabled('click')) return;
   const now = Date.now();
   if (now - lastClickSoundAt < CLICK_SOUND_THROTTLE_MS) return;
   lastClickSoundAt = now;
@@ -37,6 +37,21 @@ const playClickSound = () => {
     /* 音频不可用：静默忽略 */
   }
 };
+
+function petSoundEnabled(kind) {
+  try {
+    const saved = localStorage.getItem('codex-pet.sound.' + kind);
+    if (saved !== null) return saved === '1';
+  } catch {}
+  return kind === 'click' && config?.clickSoundEnabled === true;
+}
+
+window.petBridge?.onCompletionCue?.((state) => {
+  if (!petSoundEnabled('completion') || (state !== 'success' && state !== 'error')) return;
+  const audio = new Audio(BASE + '/sound/turn-' + state + '.wav');
+  audio.volume = 0.45;
+  void audio.play().catch(() => {});
+});
 
 // 单只宠物：行为与浏览器 PetCard 一致，纯逻辑来自 src/shared
 class PetSprite {
@@ -76,6 +91,12 @@ class PetSprite {
       this.margin.l = this.margin.r = Math.max(m, 76);
       this.margin.t = Math.max(this.margin.t, 52);
       this.margin.b = Math.max(m, 52);
+    }
+    if (window.petBridge?.getWeather) {
+      this.margin.l = Math.max(this.margin.l, 218);
+      this.margin.r = Math.max(this.margin.r, 218);
+      this.margin.t = Math.max(this.margin.t, 104);
+      this.margin.b = Math.max(this.margin.b, 104);
     }
     window.__dshPetDebug.winMargin = this.margin;
     // 宠物包围盒左上角在【工作区】坐标系里的位置（本窗口的位置 = 宠物的位置）
@@ -219,6 +240,10 @@ class PetSprite {
     });
     this.codexActivitiesActive = false;
     this.codexActivities = activitiesEnabled ? new CodexActivityList((target) => window.petBridge.openCodexThread(target)) : null;
+    this.weather = window.petBridge?.getWeather ? new window.PetWeatherCard({
+      query: (city) => window.petBridge.getWeather(city),
+      onChange: () => this.syncInputBusy(),
+    }) : null;
     // 悬浮提示：this.el 内的绝对定位浮层，位置与翻边由 renderTip 决定，样式走 shared 的 TOOLTIP_CSS。
     this.tip = document.createElement('div');
     this.tip.className = S.TOOLTIP_CLASS;
@@ -229,6 +254,7 @@ class PetSprite {
     stage.appendChild(this.hit);
     this.el.appendChild(this.bubble);
     if (this.codexActivities) this.el.appendChild(this.codexActivities.element);
+    if (this.weather) this.el.appendChild(this.weather.element);
     this.el.appendChild(this.tip);
     this.el.appendChild(stage);
     rootEl.appendChild(this.el);
@@ -311,6 +337,7 @@ class PetSprite {
     this.inputRegionMutation.disconnect();
     this.inputRegionResize.disconnect();
     this.inputRegionElements.clear();
+    this.weather?.dispose();
     if (this.bubbleTimer !== null) window.clearTimeout(this.bubbleTimer);
     if (this.whisperTimer !== null) window.clearTimeout(this.whisperTimer);
     if (this.workTimer !== null) window.clearTimeout(this.workTimer);
@@ -399,7 +426,8 @@ class PetSprite {
     // 位置变了：提示跟的是光标，而光标存视口坐标，窗口一移就必须重摆，否则提示会跟着窗口漂走。
     // 只在显示时重摆（漫游逐帧调本函数，没显示提示时不做无谓的 DOM 写入）。
     if (this.tipOn) this.renderTip();
-    if (this.layoutCodexActivities()) this.syncInputBusy();
+    if (this.weather && !this.weather.element.hidden) this.syncInputBusy();
+    else if (this.layoutCodexActivities()) this.syncInputBusy();
     // 实况标脏（节流上报，见 markPoseDirty）：所有位移都收口在本函数，所以这里一处就够
     this.markPoseDirty();
   }
@@ -417,14 +445,15 @@ class PetSprite {
     } else {
       // 角落取主屏而不是外接矩形：不规则多屏布局下外接矩形的角落可能不属于任何显示器，
       // 配了该角落的宠物会开机即隐身。
+      const corner = this.shortcutCorner || this.pet.position.corner;
       const anchor = S.anchorPixel({
-        corner: this.pet.position.corner,
+        corner,
         // marginX/marginY 是配置里的绝对像素：页面级缩放已统一放大整窗，配置值不再乘 scale
         marginX: this.pet.position.marginX,
         // macOS 顶部边距对齐身体命中盒，扣掉动画画布头顶留白。
         marginY:
           this.pet.position.marginY -
-          (this.pet.position.corner.startsWith('top-') ? this.size * CONFIG.topInsetRatio : 0),
+          (corner.startsWith('top-') ? this.size * CONFIG.topInsetRatio : 0),
         size: this.size,
         W,
         H,
@@ -1364,7 +1393,7 @@ class PetSprite {
     // 可点的余额气泡是第四个来源：它长在窗口里、靠窗口级 click 触发，却悬在平时穿透的余量区，
     // 正需要借 busy + 控件矩形把它圈出来。
     return this.dragState.active || this.menuOpen || this.chatOpen || this.balanceClickable() ||
-      !!this.codexActivities?.rect;
+      !!this.codexActivities?.rect || !!(this.weather && !this.weather.element.hidden);
   }
 
   /** 余额气泡当前有几页：custom 取 views.length；内置 windows 是收起/展开两页；其余一页。 */
@@ -1389,6 +1418,7 @@ class PetSprite {
    * 与 setInteractive 的分工：后者表达光标在不在身体上，本方法表达我有没有在用输入（优先级更高）。
    */
   syncInputBusy() {
+    this.layoutWeather();
     this.layoutCodexActivities();
     this.syncInputRegions();
     const busy = this.inputBusy();
@@ -1403,7 +1433,7 @@ class PetSprite {
     const rects = [];
     // 控件矩形 = 主进程允许接收点击的区域，矩形外继续穿透。可点的余额气泡悬在余量区，不登记就点不到。
     const controls = [...document.querySelectorAll(
-      '.dsh-pet-menu-column, .dsh-pet-chat, .pet-bubble.is-clickable, .pet-codex-activities:not([hidden])',
+      '.dsh-pet-menu-column, .dsh-pet-chat, .pet-bubble.is-clickable, .pet-codex-activities:not([hidden]), .pet-weather-card:not([hidden])',
     )];
     for (const el of this.inputRegionElements) {
       if (!controls.includes(el)) {
@@ -1514,7 +1544,11 @@ class PetSprite {
     // 光标存视口坐标（窗口原点 + 窗口内坐标）：窗口随宠物移动时贴光标不会漂。必须在 setTip 之前
     // 更新——setTip 变显隐时会立刻渲染一次，晚一步就会用上一次的光标摆位。
     if (inBody) this.tipCursor = { x: this.pos.x - this.margin.l + wx, y: this.pos.y - this.margin.t + wy };
-    this.setInteractive(inBody || this.codexActivities?.contains(wx, wy));
+    const weather = this.weather?.element;
+    const weatherRect = weather && !weather.hidden ? weather.getBoundingClientRect() : null;
+    const inWeather = weatherRect && wx >= weatherRect.left && wx < weatherRect.right &&
+      wy >= weatherRect.top && wy < weatherRect.bottom;
+    this.setInteractive(inBody || this.codexActivities?.contains(wx, wy) || inWeather);
     // 悬浮提示与可交互判定同源（同一个 inBody）：进身体出现，离开收起
     this.setTip(inBody);
     // 跟随光标：位置依赖光标，每次移动都要重摆（setTip 只在显隐变化时渲染）
@@ -1527,6 +1561,7 @@ class PetSprite {
     if (window.petBridge?.codexMode) {
       this.stopThrow();
       this.stopMove();
+      playClickSound();
       window.petBridge.openCodexThread();
       return;
     }
@@ -1579,6 +1614,32 @@ class PetSprite {
     return { x: vx0 - winX, y: vy0 - winY, w, h };
   }
 
+  layoutWeather() {
+    const element = this.weather?.element;
+    if (!element || element.hidden) return;
+    const bounds = this.visibleClampRect() ?? { x: 0, y: 0, w: innerWidth, h: innerHeight };
+    const width = element.offsetWidth;
+    const height = element.offsetHeight;
+    const body = this.hitRect;
+    const x = this.margin.l + body.x;
+    const y = this.margin.t + body.y;
+    const gap = 8;
+    const clamp = (value, start, end) => Math.max(start, Math.min(value, end));
+    const centerX = clamp(x + (body.w - width) / 2, bounds.x + 4, bounds.x + bounds.w - width - 4);
+    const centerY = clamp(y + (body.h - height) / 2, bounds.y + 4, bounds.y + bounds.h - height - 4);
+    const candidates = [
+      [centerX, y - height - gap],
+      [centerX, y + body.h + gap],
+      [x - width - gap, centerY],
+      [x + body.w + gap, centerY],
+    ];
+    const [left, top] = candidates.find(([left, top]) =>
+      left >= bounds.x && left + width <= bounds.x + bounds.w &&
+      top >= bounds.y && top + height <= bounds.y + bounds.h) || [centerX, centerY];
+    element.style.left = left + 'px';
+    element.style.top = top + 'px';
+  }
+
   onContextMenu(e) {
     const d = this.dragState;
     if (d.active || d.dragging || this.justDragged || this.menuOpen) return;
@@ -1591,9 +1652,19 @@ class PetSprite {
       {
         label: window.petBridge?.codexMode ? '返回 Codex 会话' : (OPEN_TARGET === 'desktop' ? '打开软件' : '打开网站'),
         action: 'open-site',
-        hint: OPEN_SHORTCUT_HINT,
+        hint: window.petBridge?.codexMode ? null : OPEN_SHORTCUT_HINT,
       },
     ];
+    if (this.weather) tools.push({ label: '查询天气', action: 'weather' });
+    if (window.petBridge?.codexMode) {
+      tools.push({
+        label: '音效',
+        children: [
+          { label: '点击音效', hint: petSoundEnabled('click') ? '开' : '关', action: 'toggle-sound', kind: 'click' },
+          { label: '任务提示音', hint: petSoundEnabled('completion') ? '开' : '关', action: 'toggle-sound', kind: 'completion' },
+        ],
+      });
+    }
     // 「查看余额」无条件显示：关了 balanceEnabled 的宠物也能点，手动请求不受开关限制，点了一定给答复。
     if (!window.petBridge?.codexMode) tools.push({ label: '查看余额', action: 'show-balance' });
     tools.push(
@@ -1641,6 +1712,18 @@ class PetSprite {
   onMenuAction(leaf, keepFacing) {
     this.closeMenu();
     if (!leaf || typeof leaf !== 'object') return;
+    if (leaf.action === 'weather') {
+      void this.weather?.open();
+      return;
+    }
+    if (leaf.action === 'toggle-sound') {
+      const enabled = !petSoundEnabled(leaf.kind);
+      try {
+        localStorage.setItem('codex-pet.sound.' + leaf.kind, enabled ? '1' : '0');
+      } catch {}
+      if (enabled && leaf.kind === 'click') playClickSound();
+      return;
+    }
     if (leaf.action === 'third-party') {
       // 第三方菜单项：只把 (owner, label) 交给宿主，具体做什么由注册方自己查 /menu/events。
       // 带上宠物 id——同一条菜单项在不同宠物上被点，注册方要能分辨是哪只。
@@ -1776,6 +1859,16 @@ class PetSprite {
     this.stopThrow();
     this.stopMove();
     this.customPos = null;
+    this.shortcutCorner = null;
+    this.position();
+  }
+
+  moveToCorner(corner) {
+    if (this.dragState.active) return;
+    this.stopThrow();
+    this.stopMove();
+    this.customPos = null;
+    this.shortcutCorner = corner;
     this.position();
   }
 
@@ -1845,7 +1938,8 @@ class PetSprite {
       left: this.margin.l + r.x, right: this.margin.l + r.x + r.w,
       top: this.margin.t + r.y, bottom: this.margin.t + r.y + r.h,
     };
-    const bubble = this.bubble.classList.contains('is-on') ? this.bubble.getBoundingClientRect() : null;
+    const bubble = this.weather && !this.weather.element.hidden ? this.weather.element.getBoundingClientRect() :
+      this.bubble.classList.contains('is-on') ? this.bubble.getBoundingClientRect() : null;
     return list.place(this.visibleClampRect(), body, bubble);
   }
 

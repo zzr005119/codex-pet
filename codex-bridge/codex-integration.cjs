@@ -352,8 +352,29 @@ function followSessionStatus({ directory, sessionsDirectory, configUrl, token, i
   };
 }
 
+/** One sound per new terminal turn; the first snapshot only establishes a baseline. */
+function createCompletionCue(emit) {
+  const seen = new Set();
+  let previousMode;
+  return (snapshot) => {
+    const baseline = snapshot.mode !== previousMode;
+    previousMode = snapshot.mode;
+    const activities = snapshot.mode === 'automatic' ? snapshot.activities :
+      snapshot.acknowledged ? [] : [snapshot];
+    let cue;
+    for (const { threadId, turnId, state } of activities) {
+      if (!threadId || !turnId || (state !== 'success' && state !== 'error')) continue;
+      const key = threadId + ':' + turnId;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (!baseline && cue !== 'error') cue = state;
+    }
+    if (cue) emit(cue);
+  };
+}
+
 /** 注册受控跳转，并跟随宿主及联动器的生命周期。 */
-function install({ app, ipcMain, shell, BrowserWindow }) {
+function install({ app, ipcMain, shell, BrowserWindow, onCompletion = () => {} }) {
   const directory = process.env.DSH_PET_CODEX_DATA;
   if (!directory) return;
   const configFile = path.join(directory, 'conversation.json');
@@ -361,6 +382,7 @@ function install({ app, ipcMain, shell, BrowserWindow }) {
   const token = process.env.DSH_PET_APP_TOKEN;
   const configUrl = process.env.DSH_PET_CONFIG_URL;
   const shownActivities = new WeakMap();
+  const checkCompletion = createCompletionCue(onCompletion);
   let latestPublished = null;
   const record = (event) => {
     appendFileSync(path.join(directory, 'integration.log'), `${new Date().toISOString()} ${event}\n`);
@@ -388,36 +410,7 @@ function install({ app, ipcMain, shell, BrowserWindow }) {
     shownActivities.set(event.sender, activities);
     return activities;
   });
-  const openConversation = async (event, requested) => {
-    if (!BrowserWindow.fromWebContents(event.sender)) return;
-    let url;
-    let completed = null;
-    if (requested !== undefined) {
-      const { threadId, turnId, state: displayedState } = requested || {};
-      if (!isUuid(threadId) || !isUuid(turnId) || (displayedState !== 'working' && !isTerminal(displayedState))) return;
-      const matches = (item) => item.threadId === threadId && item.turnId === turnId;
-      const shown = shownActivities.get(event.sender)?.find(matches);
-      if (!shown) return;
-      const target = currentActivities()?.find(matches);
-      if (!target) return;
-      url = `codex://threads/${threadId}`;
-      // A poll may have delivered completion while the renderer still shows the running row.
-      if (isTerminal(displayedState) && shown.state === displayedState && target.state === displayedState) {
-        completed = { threadId, turnId };
-      }
-    } else {
-      url = readConversationUrl(configFile);
-      try {
-        const snapshot = JSON.parse(readFileSync(statusFile, 'utf8'));
-        const config = JSON.parse(readFileSync(configFile, 'utf8'));
-        if (config.mode === 'automatic') {
-          url = isUuid(snapshot.threadId) ? `codex://threads/${snapshot.threadId}` : 'codex://';
-        }
-        if (isTerminal(snapshot.state) && isUuid(snapshot.turnId) && url === `codex://threads/${snapshot.threadId}`) {
-          completed = { threadId: snapshot.threadId, turnId: snapshot.turnId };
-        }
-      } catch {}
-    }
+  async function openConversationUrl(url, completed) {
     try {
       await shell.openExternal(url);
       record('conversation-opened');
@@ -432,7 +425,37 @@ function install({ app, ipcMain, shell, BrowserWindow }) {
     } catch {
       record('conversation-open-failed');
     }
-  };
+  }
+  function openDefaultConversation() {
+    let url = readConversationUrl(configFile);
+    let completed = null;
+    try {
+      const snapshot = JSON.parse(readFileSync(statusFile, 'utf8'));
+      const config = JSON.parse(readFileSync(configFile, 'utf8'));
+      if (config.mode === 'automatic') {
+        url = isUuid(snapshot.threadId) ? `codex://threads/${snapshot.threadId}` : 'codex://';
+      }
+      if (isTerminal(snapshot.state) && isUuid(snapshot.turnId) && url === `codex://threads/${snapshot.threadId}`) {
+        completed = { threadId: snapshot.threadId, turnId: snapshot.turnId };
+      }
+    } catch {}
+    return openConversationUrl(url, completed);
+  }
+  function openConversation(event, requested) {
+    if (!BrowserWindow.fromWebContents(event.sender)) return;
+    if (requested === undefined) return openDefaultConversation();
+    const { threadId, turnId, state: displayedState } = requested || {};
+    if (!isUuid(threadId) || !isUuid(turnId) || (displayedState !== 'working' && !isTerminal(displayedState))) return;
+    const matches = (item) => item.threadId === threadId && item.turnId === turnId;
+    const shown = shownActivities.get(event.sender)?.find(matches);
+    if (!shown) return;
+    const target = currentActivities()?.find(matches);
+    if (!target) return;
+    // A poll may have delivered completion while the renderer still shows the running row.
+    const completed = isTerminal(displayedState) && shown.state === displayedState && target.state === displayedState
+      ? { threadId, turnId } : null;
+    return openConversationUrl(`codex://threads/${threadId}`, completed);
+  }
   ipcMain.on('pet:open-codex', openConversation);
   const releases = [
     watchHost(Number(process.env.DSH_PET_CODEX_HOST_PID), () => { record('host-exited'); app.quit(); }),
@@ -446,7 +469,10 @@ function install({ app, ipcMain, shell, BrowserWindow }) {
       token,
       since: Date.parse(process.env.DSH_PET_CODEX_HOST_STARTED) || Date.now(),
       record,
-      onSnapshot: (snapshot) => { latestPublished = snapshot; },
+      onSnapshot: (snapshot) => {
+        latestPublished = snapshot;
+        checkCompletion(snapshot);
+      },
     }));
   }
   app.once('will-quit', () => {
@@ -455,6 +481,13 @@ function install({ app, ipcMain, shell, BrowserWindow }) {
     ipcMain.removeHandler('pet:codex-activities');
   });
   record('integration-ready');
+  return () => {
+    const activities = currentActivities();
+    if (activities === null) return openDefaultConversation();
+    if (activities.length === 0) return openConversationUrl('codex://', null);
+    const { threadId, turnId, state } = activities[0];
+    return openConversationUrl(`codex://threads/${threadId}`, isTerminal(state) ? { threadId, turnId } : null);
+  };
 }
 
-module.exports = { readConversationUrl, watchHost, createSessionReader, createAutomaticSessionReader, followSessionStatus, install };
+module.exports = { readConversationUrl, watchHost, createSessionReader, createAutomaticSessionReader, followSessionStatus, createCompletionCue, install };

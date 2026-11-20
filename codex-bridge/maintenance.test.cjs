@@ -25,6 +25,7 @@ function makePet(customPos = null) {
     size: 320, halfW: 160, halfH: 90,
     pet: { position: { corner: 'bottom-right', marginX: 0, marginY: 60 } },
     customPos, dragState: { active: false }, throwRef: null, pos: { x: 0, y: 0 },
+    stopThrow() {},
     stopMove() {},
     sendBounds(x, y) { this.pos = { x, y }; },
   });
@@ -54,6 +55,29 @@ test('the configured corner survives a temporary wide display and a return to th
   assert.equal(anchored.pet.customPos, null);
   assert.deepEqual(manuallyPlaced.pet.pos, { x: 1759, y: 510 });
   assert.ok(manuallyPlaced.pet.customPos);
+});
+
+test('the corner shortcut anchors to the primary work area and keeps the configured home position', () => {
+  const fixture = makePet({ rx: 3000 / 3840, ry: 600 / 1032 });
+  const { pet } = fixture;
+  pet.dragState.active = true;
+  pet.moveToCorner('top-left');
+  assert.deepEqual(pet.pos, { x: 2840, y: 510 }, 'a pointer drag keeps control of the pet');
+
+  pet.dragState.active = false;
+  for (const [corner, expected] of [
+    ['top-left', { x: 0, y: 60 }], ['top-right', { x: 1600, y: 60 }],
+    ['bottom-right', { x: 1600, y: 792 }], ['bottom-left', { x: 0, y: 792 }],
+  ]) {
+    pet.moveToCorner(corner);
+    assert.deepEqual(pet.pos, expected);
+  }
+
+  pet.moveToCorner('top-right');
+  fixture.changePrimary(1280);
+  assert.deepEqual(pet.pos, { x: 960, y: 60 });
+  pet.goHome();
+  assert.deepEqual(pet.pos, { x: 960, y: 792 });
 });
 
 test('the stage keeps its foot offset when the pointer becomes a drag and releases', () => {
