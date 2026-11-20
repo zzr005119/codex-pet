@@ -230,6 +230,50 @@ test('installed Electron shows distinct activity buttons, clears one completion 
     await renderer.call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
     await expectRows([['Build check', 'working']]);
     await expectIconStyles();
+    const home = await renderer.evaluate('sprites[0].pos');
+    const openPetMenu = () => renderer.evaluate(`(() => {
+      const hit = document.querySelector('.pet-hit');
+      const rect = hit.getBoundingClientRect();
+      hit.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, button: 2,
+        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
+      }));
+      return [...document.querySelector('.dsh-pet-menu-column').children].map((item) => item.firstChild.textContent);
+    })()`);
+    const menuItemCenter = (label) => renderer.evaluate(`(() => {
+      const item = [...document.querySelectorAll('.dsh-pet-menu-item')].find(
+        (node) => node.getClientRects().length && node.firstChild.textContent === ${JSON.stringify(label)}
+      );
+      if (!item) return null;
+      const r = item.getBoundingClientRect();
+      const x = r.x + r.width / 2, y = r.y + r.height / 2;
+      return item.contains(document.elementFromPoint(x, y)) ? { x, y } : null;
+    })()`);
+    const pointer = (type, point, extra = {}) => renderer.call('Input.dispatchMouseEvent', { type, ...point, ...extra });
+    for (const [label, corner] of [
+      ['左上角', 'top-left'], ['右上角', 'top-right'], ['右下角', 'bottom-right'], ['左下角', 'bottom-left'],
+      ['左上角', 'top-left'],
+    ]) {
+      const before = await renderer.evaluate('sprites[0].pos');
+      const rootLabels = await openPetMenu();
+      assert.ok(rootLabels.includes('移到角落'));
+      assert.ok(!rootLabels.includes('显示位置'));
+      const branch = await menuItemCenter('移到角落');
+      assert.ok(branch, 'corner menu branch must be reachable');
+      await pointer('mouseMoved', branch);
+      const target = await waitFor(() => menuItemCenter(label), Boolean, label + ' must be visible and clickable');
+      await pointer('mouseMoved', target);
+      await pointer('mousePressed', target, { button: 'left', buttons: 1, clickCount: 1 });
+      await pointer('mouseReleased', target, { button: 'left', clickCount: 1 });
+      const result = await renderer.evaluate('({ corner: sprites[0].shortcutCorner, pos: sprites[0].pos, open: !!document.querySelector(".dsh-pet-menu") })');
+      assert.equal(result.corner, corner);
+      assert.notDeepEqual(result.pos, before);
+      assert.equal(result.open, false, 'selecting a corner must close the menu');
+    }
+    await openPetMenu();
+    await renderer.evaluate(`[...document.querySelector('.dsh-pet-menu-column').children]
+      .find((item) => item.firstChild.textContent === '回到初始位置').click()`);
+    assert.deepEqual(await renderer.evaluate('sprites[0].pos'), home);
     await renderer.call('DOM.enable');
     await renderer.call('CSS.enable');
     const { root } = await renderer.call('DOM.getDocument');

@@ -79,3 +79,13 @@ node --test 'codex-bridge/*.test.cjs' codex-bridge/lifecycle.test.mjs
 
 - 没有条目：查看 `install/data/bridge.log`，确认已识别 Codex 主进程；再查看 `integration.log`、`session-status.json` 和 `conversation.json`。
 - 完成后未清除：确认点击的是该终态对应的条目，再看 `integration.log`。删除 `acknowledged-status.json` 可能让旧提示重现。
+
+## 推送到 GitHub
+
+后续项目更新按以下顺序处理：
+
+1. 按改动范围运行验证。涉及桌面交互时，用候选 EXE 跑集成测试，验证受影响的入口。例如改动摆放时，检查右键菜单的四个角落和「回到初始位置」；改动全局快捷键时，还要验证其他窗口有焦点时能否触发。
+2. 同步受影响的 README、便携包使用说明和维护文档；项目目标、阶段、关键功能或决策有实质变化时同步 `PROJECT.md`。
+3. 用 `git status --short` 和 `git diff --check` 检查改动，只暂存本次涉及的文件，并用 `git diff --cached` 核对将要提交的内容。提交后用 `git push origin main` 推送。安装目录、运行数据和构建产物留在本地。
+
+源码推送后，已有 Release 的便携 ZIP 仍对应原版本。需要发布新版时，从干净的目标提交构建并验证便携包，再用新标签发布 ZIP。

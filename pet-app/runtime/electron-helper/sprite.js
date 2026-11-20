@@ -1673,10 +1673,15 @@ class PetSprite {
         { label: '对话', action: 'chat' },
       ]),
       { label: '回到初始位置', action: 'home' },
-      // 显示位置（仅网页/仅桌面/两者/都不）：改这只宠物的 display 配置，由宿主重载生效。
-      // 与浏览器端注入同一份子菜单，两端文案与取值不会漂移。不就地开关窗：窗口是进程启动时按
-      // DSH_PET_PETS 一次性建的，就地增删既改不了磁盘配置也改不了窗口数量。
-      S.displayMenuBranch(),
+      window.petBridge?.codexMode ? {
+        label: '移到角落',
+        children: [
+          { label: '左上角', action: 'move-to-corner', corner: 'top-left' },
+          { label: '右上角', action: 'move-to-corner', corner: 'top-right' },
+          { label: '右下角', action: 'move-to-corner', corner: 'bottom-right' },
+          { label: '左下角', action: 'move-to-corner', corner: 'bottom-left' },
+        ],
+      } : S.displayMenuBranch(),
       // 重载配置：请宿主重启桌面 Helper，全部窗口按最新配置重建。放在最后——它是维护动作。
       { label: '重载配置', action: 'reload' },
     );
@@ -1752,6 +1757,10 @@ class PetSprite {
     }
     if (leaf.action === 'home') {
       this.goHome(); // 停漫游/移动，清会话位置，回配置角落
+      return;
+    }
+    if (leaf.action === 'move-to-corner') {
+      this.moveToCorner(leaf.corner);
       return;
     }
     if (leaf.action === 'set-display') {
